@@ -1,0 +1,21 @@
+services:
+  api:
+    build: .
+    ports:
+      - "${IBUPROFEN_BIND_ADDRESS:-0.0.0.0}:8080:8080"
+    environment:
+      IBUPROFEN_DATA_DIR: /srv/api/var
+      IBUPROFEN_ALLOW_HTTP: "1"
+    volumes:
+      - api-data:/srv/api/var
+    restart: unless-stopped
+  worker:
+    build: .
+    command: ["php", "bin/worker.php"]
+    environment:
+      IBUPROFEN_DATA_DIR: /srv/api/var
+    volumes:
+      - api-data:/srv/api/var
+    restart: unless-stopped
+volumes:
+  api-data:
