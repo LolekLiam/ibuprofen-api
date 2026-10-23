@@ -11,16 +11,7 @@ class SchoolPageParser {
     public static function parse(string $html, string $schoolKey): SchoolMeta {
         $crawler = new Crawler($html);
         
-        $scriptText = "";
-        foreach ($crawler->filter('script') as $script) {
-            $scriptText .= $script->nodeValue . "\n";
-        }
-        
-        if (preg_match("/var\s+id_sola\s*=\s*'(\d+)'/", $scriptText, $matches)) {
-            $schoolId = (int)$matches[1];
-        } else {
-            throw new \Exception("id_sola not found in school page");
-        }
+        // The requested public key identifies this school, even without an id_sola script.
         
         $classes = [];
         // eAsistent might use different IDs for parameters (classes, teachers, rooms)
@@ -78,7 +69,6 @@ class SchoolPageParser {
 
         return new SchoolMeta(
             $schoolKey,
-            $schoolId,
             $classes,
             $teachers,
             $schoolName,

@@ -6,7 +6,7 @@ use App\Parsers\{SchoolPageParser,TimetableParser};
 use App\Models\{SchoolMeta,TimetableWeek};
 use Slim\Psr7\Factory\ServerRequestFactory;
 
-$fixture=dirname(__DIR__,2).'/app/src/test/resources/';
+$fixture=__DIR__.'/fixtures/';
 final class FixtureClient extends EAsistentClient {
     public int $calls=0; public bool $fail=false;
     public function __construct(private string $fixture) {}
@@ -37,10 +37,17 @@ $key='test-school-key'; $token='';
 test('printable parser uses direct table rows and correct dates',function () use ($fixture) {
     $w=TimetableParser::parse(1,file_get_contents($fixture.'timetable-print.html'));
     check(count($w->days)===5 && $w->weekStart==='2026-10-12','Bad dates');
-    check(count($w->days[0]->lessonsByPeriod)===9,'Nested table rows were parsed as periods');
-    check($w->days[0]->lessonsByPeriod[0]['lessons'][0]->subjectCode==='ITP','Missing plain-text subject');
+    check(count($w->days[0]->lessonsByPeriod)===3,'Nested table rows were parsed as periods');
+    check($w->days[0]->lessonsByPeriod[0]['lessons'][0]->subjectCode==='SYN','Missing plain-text subject');
 });
 test('week metadata includes actual available week IDs',function () use ($source,$key) { check(in_array(7,$source->getSchoolMeta($key)->allWeekIds,true),'Missing week 7'); });
+test('school metadata uses the public key without a numeric ID script',function () use ($fixture) {
+    $html=preg_replace('~<script>.*?</script>~s','',file_get_contents($fixture.'school.html'));
+    $meta=SchoolPageParser::parse($html,'synthetic-school-hash-a1b2');
+    check($meta->schoolKey==='synthetic-school-hash-a1b2','String school key lost');
+    check(!property_exists($meta,'schoolId'),'Obsolete numeric ID is still present');
+    check(count($meta->classes)>0,'Classes missing without ID script');
+});
 test('legacy routes cannot run unauthenticated synchronization',function () use ($key) {
     check(request('GET',"/school/$key/sync")[0]===404,'Legacy sync still exposed');
     check(request('POST',"/v1/admin/schools/$key/sync-jobs",['scope'=>'year'])[0]===401,'Sync not protected');
@@ -56,17 +63,17 @@ test('admin passwords are hashed and bearer tokens are never stored raw',functio
 });
 test('class cache avoids repeated upstream calls',function () use ($key,$source) {
     request('GET',"/v1/schools/$key"); $before=$source->calls;
-    $a=request('GET',"/v1/schools/$key/timetable?class_id=810899&week=7");
-    $b=request('GET',"/v1/schools/$key/timetable?class_id=810899&week=7");
+    $a=request('GET',"/v1/schools/$key/timetable?class_id=101&week=7");
+    $b=request('GET',"/v1/schools/$key/timetable?class_id=101&week=7");
     check($a[0]===200 && $a[1]===$b[1],'Cache changed response'); check($source->calls===$before+1,'Cache miss repeated');
 });
 test('room and abbreviated-teacher filters retain class labels and coverage',function () use ($key) {
-    $teacher=request('GET',"/v1/schools/$key/timetable?teacher=".rawurlencode('J. Plavec').'&week=7');
-    $room=request('GET',"/v1/schools/$key/timetable?room=D3.1&week=7");
+    $teacher=request('GET',"/v1/schools/$key/timetable?teacher=".rawurlencode('M. Example').'&week=7');
+    $room=request('GET',"/v1/schools/$key/timetable?room=TEST-R1&week=7");
     check($teacher[0]===200 && $room[0]===200,'Aggregation failed');
     check($teacher[1]['meta']['complete']===false,'Missing classes not reported');
     $lessons=array_merge(...array_map(fn($day)=>array_merge([], ...array_column($day['lessonsByPeriod'],'lessons')),$room[1]['data']['days']));
-    check(count($lessons)>0 && $lessons[0]['sourceClassLabel']==='E1A','Source class missing');
+    check(count($lessons)>0 && $lessons[0]['sourceClassLabel']==='TEST-A','Source class missing');
 });
 test('POST queues a deduplicated job without synchronously fetching all classes',function () use ($key,$source,&$token) {
     $before=$source->calls;
@@ -81,35 +88,35 @@ test('worker completes jobs and makes aggregate coverage complete',function () u
     check(request('GET',"/v1/schools/$key/timetables?week=7")[1]['meta']['complete']===true,'Coverage incomplete');
 });
 test('failed refresh preserves the last successful cache atomically',function () use ($service,$source,$key,$db) {
-    $meta=$service->meta($key); $cacheKey=$service->cacheKey($meta,810899,7); $before=$db->cache($cacheKey);
+    $meta=$service->meta($key); $cacheKey=$service->cacheKey($meta,101,7); $before=$db->cache($cacheKey);
     $source->fail=true;
-    try { $service->classWeek($meta,810899,7,true); throw new LogicException('Expected failure'); } catch (RuntimeException $e) { check(!$e instanceof LogicException,'Refresh unexpectedly succeeded'); }
+    try { $service->classWeek($meta,101,7,true); throw new LogicException('Expected failure'); } catch (RuntimeException $e) { check(!$e instanceof LogicException,'Refresh unexpectedly succeeded'); }
     $source->fail=false; check($before===$db->cache($cacheKey),'Failed refresh destroyed cached schedule');
 });
 test('database failure rolls back cache and lesson replacement together',function () use ($db,$service,$key) {
-    $meta=$service->meta($key); $cacheKey=$service->cacheKey($meta,810899,7); $before=$db->cache($cacheKey);
+    $meta=$service->meta($key); $cacheKey=$service->cacheKey($meta,101,7); $before=$db->cache($cacheKey);
     $count=(int)$db->query('SELECT COUNT(*) FROM lessons WHERE cache_key=?',[$cacheKey])->fetchColumn();
     $db->pdo->exec("CREATE TRIGGER fixture_failure BEFORE INSERT ON lessons BEGIN SELECT RAISE(ABORT,'fixture'); END;");
-    try { $service->classWeek($meta,810899,7,true); throw new LogicException('Expected write failure'); }
+    try { $service->classWeek($meta,101,7,true); throw new LogicException('Expected write failure'); }
     catch (PDOException $e) { }
     finally { $db->pdo->exec('DROP TRIGGER fixture_failure'); }
     check($before===$db->cache($cacheKey),'Cache update escaped transaction');
     check($count===(int)$db->query('SELECT COUNT(*) FROM lessons WHERE cache_key=?',[$cacheKey])->fetchColumn(),'Partial lesson replacement survived');
 });
 test('concurrent refresh lock avoids a duplicate upstream fetch',function () use ($db,$service,$source,$key) {
-    $meta=$service->meta($key); $cacheKey=$service->cacheKey($meta,810899,7);
+    $meta=$service->meta($key); $cacheKey=$service->cacheKey($meta,101,7);
     $handle=fopen($db->config->dataDir.'/'.hash('sha256',$cacheKey).'.lock','c'); flock($handle,LOCK_EX);
     $before=$source->calls;
-    try { $service->classWeek($meta,810899,7,true); throw new LogicException('Expected busy refresh'); }
+    try { $service->classWeek($meta,101,7,true); throw new LogicException('Expected busy refresh'); }
     catch (App\Api\HttpError $e) { check($e->status===503,'Incorrect busy status'); }
     finally { flock($handle,LOCK_UN); fclose($handle); }
     check($before===$source->calls,'Duplicate upstream request made');
 });
 test('invalid filters, unknown classes, and obsolete force refresh are rejected',function () use ($key) {
-    check(request('GET',"/v1/schools/$key/timetable?class_id=810899&teacher=x")[0]===422,'Multiple filters accepted');
-    check(request('GET',"/v1/schools/$key/timetable?class_id=810899&force=true")[0]===422,'Unauthenticated force refresh accepted');
+    check(request('GET',"/v1/schools/$key/timetable?class_id=101&teacher=x")[0]===422,'Multiple filters accepted');
+    check(request('GET',"/v1/schools/$key/timetable?class_id=101&force=true")[0]===422,'Unauthenticated force refresh accepted');
     check(request('GET',"/v1/schools/$key/timetable?class_id=99999&week=7")[0]===404,'Unknown class accepted');
-    check(request('GET',"/v1/schools/$key/timetable?class_id=810899&week=99")[0]===422,'Invalid week accepted');
+    check(request('GET',"/v1/schools/$key/timetable?class_id=101&week=99")[0]===422,'Invalid week accepted');
 });
 test('password reset revokes existing sessions',function () use ($auth,&$token) {
     $auth->create('owner','new-test-password-long'); check(request('GET','/v1/admin/me',null,$token)[0]===401,'Old token survived password reset');
@@ -135,8 +142,8 @@ test('different sync scopes are queued separately',function () use ($db,$key) {
 test('worker resumes interrupted tasks without repeating completed classes',function () use ($db,$service,$source,$key) {
     $job=$db->enqueue($key,'week',7,1); $id=$job['id'];
     $db->query("UPDATE jobs SET status='running',total=2,completed=1 WHERE id=?",[$id]);
-    $db->query("INSERT INTO tasks VALUES(?,810899,7,'done')",[$id]);
-    $db->query("INSERT INTO tasks VALUES(?,810907,7,'pending')",[$id]);
+    $db->query("INSERT INTO tasks VALUES(?,101,7,'done')",[$id]);
+    $db->query("INSERT INTO tasks VALUES(?,102,7,'pending')",[$id]);
     $before=$source->calls;
     (new SyncWorker($db,$service))->once();
     check($source->calls===$before+1,'Completed tasks repeated');

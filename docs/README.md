@@ -100,6 +100,8 @@ Environment variables are read by both API and CLI; use the same values for ever
 
 ## Migration
 
+Public school metadata uses the string `schoolKey` as its identifier. The obsolete numeric `schoolId` field is no longer part of the model; school pages do not need an `id_sola` script. Existing cache/database files can be kept.
+
 This replaces the old unversioned routes. In particular, unauthenticated GET synchronization, `force=true`, the old teacher-ID/date route, and eAsistent credential passthrough routes are removed. Upgrade the Android app together with the server. Existing `database.sqlite` is left untouched; v1 starts a separate `var/api.sqlite` and repopulates its cache when schools are registered/synced. There is no automatic import of old cache data or passwords.
 
 ## Validation and implementation
@@ -109,6 +111,6 @@ php tests/run.php
 composer audit
 ```
 
-Tests use public timetable fixtures from the Android project and an injected upstream client; they never need a real eAsistent login. Cache hits retain the complete parsed JSON, SQLite WAL and indexed lesson lookups support readers during short writes, and per-resource locks prevent concurrent refreshes from fetching the same timetable. Failed refreshes leave the prior cache intact. Table parsing uses direct rows/cells to avoid accidentally treating lesson sub-tables as periods.
+Tests use original synthetic MIT-licensed timetable fixtures in `tests/fixtures/` and an injected upstream client; they never need a real eAsistent login. Cache hits retain the complete parsed JSON, SQLite WAL and indexed lesson lookups support readers during short writes, and per-resource locks prevent concurrent refreshes from fetching the same timetable. Failed refreshes leave the prior cache intact. Table parsing uses direct rows/cells to avoid accidentally treating lesson sub-tables as periods.
 
 References: [PHP password hashing](https://www.php.net/manual/en/function.password-hash.php), [SQLite WAL](https://www.sqlite.org/wal.html).
